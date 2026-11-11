@@ -154,7 +154,9 @@ type Request struct {
 	AccessToken string
 	// JKT, when non-empty, requires the proof key thumbprint to equal it
 	// (the cnf.jkt of a bound token, or dpop_jkt from an authorization
-	// request).
+	// request). A mismatch is reported as invalid_token when AccessToken is
+	// set and as invalid_grant otherwise; see CodeInvalidToken and
+	// CodeInvalidGrant.
 	JKT string
 }
 
@@ -213,8 +215,10 @@ type claims struct {
 	ATH   string          `json:"ath"`
 }
 
-// Verify checks proof against r and returns the verified proof. Proof
-// failures are of type *Error; use Code to get the OAuth error code. An
+// Verify checks proof against r and returns the verified proof. Failures are
+// of type *Error; use Code to get the OAuth error code: invalid_dpop_proof for
+// an invalid proof, use_dpop_nonce for a missing or stale nonce, and
+// invalid_token / invalid_grant for a key-binding mismatch. An
 // unparsable r.URL is a server configuration error and is returned as a plain
 // error.
 //
@@ -292,7 +296,15 @@ func (v *Verifier) Verify(ctx context.Context, proof string, r Request) (*Proof,
 		return nil, invalid(ErrKey, "DPoP proof jwk unacceptable")
 	}
 	if r.JKT != "" && !equal(jkt, r.JKT) {
-		return nil, invalid(ErrThumbprint, "DPoP proof key does not match bound key")
+		// The proof itself is valid; the token or grant is bound to another
+		// key. Resource servers answer invalid_token (RFC 9449 §7.1,
+		// Figure 16). For token endpoints RFC 9449 only says the request
+		// MUST be rejected; invalid_grant (RFC 6749 §5.2) is our
+		// interpretation.
+		if r.AccessToken != "" {
+			return nil, &Error{Code: CodeInvalidToken, Description: "Invalid DPoP key binding", Err: ErrThumbprint}
+		}
+		return nil, &Error{Code: CodeInvalidGrant, Description: "DPoP proof key does not match the key bound to the grant", Err: ErrThumbprint}
 	}
 	if v.nonces != nil {
 		if c.Nonce == "" || !v.nonces.Valid(ctx, c.Nonce) {

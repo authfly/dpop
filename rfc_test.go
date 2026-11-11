@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -81,6 +82,26 @@ func TestRFC9449Examples(t *testing.T) {
 				t.Fatalf("replay accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestRFC9449Figure16(t *testing.T) {
+	// A valid Figure 13 proof presented with a token bound to another key.
+	now := func() time.Time { return time.Unix(1562262619, 0) }
+	v, err := dpop.NewVerifier(dpop.Config{Replay: dpop.NewMemoryReplayCache(0).WithClock(now), Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.Verify(context.Background(), rfcFigure13, dpop.Request{Method: "GET",
+		URL: "https://resource.example.org/protectedresource", AccessToken: rfcAccessToken,
+		JKT: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"})
+	var e *dpop.Error
+	if !errors.As(err, &e) || e.Code != dpop.CodeInvalidToken || !errors.Is(err, dpop.ErrThumbprint) {
+		t.Fatalf("got %v", err)
+	}
+	want := `DPoP error="invalid_token", error_description="Invalid DPoP key binding", algs="ES256"`
+	if got := dpop.WWWAuthenticate([]string{"ES256"}, e.Code, e.Description); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
 

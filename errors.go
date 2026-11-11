@@ -16,6 +16,16 @@ const (
 	// CodeUseNonce is returned when the server requires a nonce and the proof
 	// has none or a stale one (RFC 9449 §8, §9).
 	CodeUseNonce = "use_dpop_nonce"
+	// CodeInvalidToken is returned at a resource server (Request.AccessToken
+	// set) when the proof key does not match the key the access token is
+	// bound to (RFC 9449 §7.1, Figure 16).
+	CodeInvalidToken = "invalid_token"
+	// CodeInvalidGrant is returned at a token endpoint (Request.AccessToken
+	// empty) when the proof key does not match the key bound to the grant,
+	// e.g. a DPoP-bound refresh token or a code issued for dpop_jkt.
+	// RFC 9449 only requires rejection (§5, §10); invalid_grant is this
+	// package's interpretation following RFC 6749 §5.2, not RFC 9449 text.
+	CodeInvalidGrant = "invalid_grant"
 )
 
 // Reasons wrapped by *Error. Use errors.Is to test for them. They are meant
@@ -40,7 +50,10 @@ var (
 )
 
 // Error is the error type returned by Verifier.Verify. Code is one of
-// CodeInvalidProof or CodeUseNonce and is safe to send to clients.
+// CodeInvalidProof, CodeUseNonce, CodeInvalidToken or CodeInvalidGrant and is
+// safe to send to clients. CodeInvalidToken and CodeInvalidGrant are used only
+// for a key-binding mismatch (ErrThumbprint); every other proof failure is
+// CodeInvalidProof.
 type Error struct {
 	Code        string
 	Description string
@@ -60,7 +73,9 @@ func invalid(reason error, desc string) *Error {
 	return &Error{Code: CodeInvalidProof, Description: desc, Err: reason}
 }
 
-// Code returns the RFC 9449 error code for err, or "" if err is not a *Error.
+// Code returns the OAuth error code for err (invalid_dpop_proof,
+// use_dpop_nonce, invalid_token or invalid_grant), or "" if err is not a
+// *Error.
 func Code(err error) string {
 	var e *Error
 	if errors.As(err, &e) {

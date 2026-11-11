@@ -47,7 +47,8 @@ func token(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		// 400 {"error": dpop.Code(err)} -> invalid_dpop_proof or use_dpop_nonce
+		// 400 {"error": dpop.Code(err)}: invalid_dpop_proof, use_dpop_nonce,
+		// or invalid_grant when Request.JKT does not match (see Error codes)
 	}
 }
 ```
@@ -64,9 +65,11 @@ p, err := verifier.Verify(ctx, proof, dpop.Request{
 	AccessToken: accessToken,    // from "Authorization: DPoP <token>"; requires ath
 	JKT:         tokenCnfJKT,    // cnf.jkt from the token or introspection
 })
-if err != nil {
+var e *dpop.Error
+if errors.As(err, &e) {
+	// invalid_dpop_proof, use_dpop_nonce, or invalid_token on a key-binding mismatch
 	w.Header().Set("WWW-Authenticate",
-		dpop.WWWAuthenticate(verifier.Algorithms(), dpop.Code(err), "invalid DPoP proof"))
+		dpop.WWWAuthenticate(verifier.Algorithms(), e.Code, e.Description))
 	w.WriteHeader(http.StatusUnauthorized)
 	return
 }
@@ -100,6 +103,26 @@ Following RFC 9449 §4.3 (and §7.1 for resource servers):
 - the nonce is valid, when a `NonceSource` is configured;
 - the (`jkt`, `jti`) pair was not seen before. A `ReplayCache` is required
   unless replay checking is explicitly disabled. Cache errors fail closed.
+
+## Error codes
+
+`Verify` returns `*dpop.Error`; `dpop.Code(err)` gives the OAuth error code.
+
+| Code | When | Source |
+| --- | --- | --- |
+| `invalid_dpop_proof` | the proof is missing, malformed, or fails any check (signature, `htm`, `htu`, `iat`, `ath`, replay, ...) | RFC 9449 §5, §7.1 |
+| `use_dpop_nonce` | a `NonceSource` is set and the nonce is missing or invalid | RFC 9449 §8, §9 |
+| `invalid_token` | resource server (`Request.AccessToken` set): the proof is valid but its key does not match `Request.JKT` | RFC 9449 §7.1, Figure 16 |
+| `invalid_grant` | token endpoint (`Request.AccessToken` empty): the proof is valid but its key does not match `Request.JKT` (bound refresh token, `dpop_jkt` code) | see note |
+
+Checks run in a fixed order and the key binding is compared only after the
+proof itself is valid, so a broken proof is always `invalid_dpop_proof`. A
+binding mismatch does not record the proof in the replay cache. Both binding
+errors also match `errors.Is(err, dpop.ErrThumbprint)`.
+
+Note: for the token endpoint RFC 9449 only says such a request MUST be
+rejected (§5, §10). Returning `invalid_grant` (RFC 6749 §5.2) is this
+library's interpretation, not RFC 9449 text.
 
 ## Threat notes
 

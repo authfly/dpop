@@ -139,7 +139,6 @@ func TestVerifyRejects(t *testing.T) {
 		{"iat future", k.Proof("POST", tokenURL, dpoptest.Options{IssuedAt: fixedNow.Add(dpop.DefaultLeeway + time.Second)}), base, dpop.ErrIssuedAt},
 		{"ath missing", k.Proof("POST", tokenURL, opts(dpoptest.Options{})), dpop.Request{Method: "POST", URL: tokenURL, AccessToken: "at"}, dpop.ErrAccessToken},
 		{"ath wrong", k.Proof("POST", tokenURL, opts(dpoptest.Options{AccessToken: "other"})), dpop.Request{Method: "POST", URL: tokenURL, AccessToken: "at"}, dpop.ErrAccessToken},
-		{"jkt wrong", k.Proof("POST", tokenURL, opts(dpoptest.Options{})), dpop.Request{Method: "POST", URL: tokenURL, JKT: other.JKT()}, dpop.ErrThumbprint},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -330,5 +329,53 @@ func TestErrorFormatting(t *testing.T) {
 	}
 	if (&dpop.Error{Code: "c", Description: "d"}).Error() != "c: d" {
 		t.Fatal("Error() without cause")
+	}
+}
+
+func TestKeyBindingMismatch(t *testing.T) {
+	k := dpoptest.MustKey(dpop.ES256)
+	other := dpoptest.MustKey(dpop.ES256)
+	tests := []struct {
+		name     string
+		proof    string
+		req      dpop.Request
+		wantCode string
+		wantErr  error
+	}{
+		{"token endpoint", k.Proof("POST", tokenURL, dpoptest.Options{IssuedAt: fixedNow}),
+			dpop.Request{Method: "POST", URL: tokenURL, JKT: other.JKT()}, dpop.CodeInvalidGrant, dpop.ErrThumbprint},
+		{"resource server", k.Proof("GET", apiURL, dpoptest.Options{IssuedAt: fixedNow, AccessToken: "at"}),
+			dpop.Request{Method: "GET", URL: apiURL, AccessToken: "at", JKT: other.JKT()}, dpop.CodeInvalidToken, dpop.ErrThumbprint},
+		// Proof failures checked before the binding stay invalid_dpop_proof.
+		{"token endpoint bad htu", k.Proof("POST", tokenURL+"x", dpoptest.Options{IssuedAt: fixedNow}),
+			dpop.Request{Method: "POST", URL: tokenURL, JKT: other.JKT()}, dpop.CodeInvalidProof, dpop.ErrURI},
+		{"resource server bad ath", k.Proof("GET", apiURL, dpoptest.Options{IssuedAt: fixedNow, AccessToken: "other"}),
+			dpop.Request{Method: "GET", URL: apiURL, AccessToken: "at", JKT: other.JKT()}, dpop.CodeInvalidProof, dpop.ErrAccessToken},
+		{"resource server stale", k.Proof("GET", apiURL, dpoptest.Options{IssuedAt: fixedNow.Add(-time.Hour), AccessToken: "at"}),
+			dpop.Request{Method: "GET", URL: apiURL, AccessToken: "at", JKT: other.JKT()}, dpop.CodeInvalidProof, dpop.ErrIssuedAt},
+		{"resource server bad signature", tamper(k.Proof("GET", apiURL, dpoptest.Options{IssuedAt: fixedNow})),
+			dpop.Request{Method: "GET", URL: apiURL, AccessToken: "at", JKT: other.JKT()}, dpop.CodeInvalidProof, dpop.ErrSignature},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := newVerifier(t, nil)
+			_, err := v.Verify(context.Background(), tt.proof, tt.req)
+			if !errors.Is(err, tt.wantErr) || dpop.Code(err) != tt.wantCode {
+				t.Fatalf("got %v (code %q), want %v (code %q)", err, dpop.Code(err), tt.wantErr, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestKeyBindingMismatchDoesNotConsumeProof(t *testing.T) {
+	v := newVerifier(t, nil)
+	k := dpoptest.MustKey(dpop.ES256)
+	other := dpoptest.MustKey(dpop.ES256)
+	proof := k.Proof("POST", tokenURL, dpoptest.Options{IssuedAt: fixedNow})
+	if _, err := v.Verify(context.Background(), proof, dpop.Request{Method: "POST", URL: tokenURL, JKT: other.JKT()}); dpop.Code(err) != dpop.CodeInvalidGrant {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := v.Verify(context.Background(), proof, dpop.Request{Method: "POST", URL: tokenURL, JKT: k.JKT()}); err != nil {
+		t.Fatalf("matching key rejected after mismatch: %v", err)
 	}
 }
